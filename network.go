@@ -17,7 +17,6 @@ package network
 import (
     "github.com/coopernurse/gorp"
     "github.com/virtbsd/VirtualMachine"
-    "fmt"
 )
 
 type NetworkPhysical struct {
@@ -50,7 +49,7 @@ type NetworkDevice struct {
     DeviceID int
     Options map[string]string `db:"-"`
     Addresses []string `db:"-"`
-    Network Network `db:"-"`
+    Network *Network `db:"-"`
     NetworkUUID string
     VmUUID string
 }
@@ -67,32 +66,31 @@ func GetNetworks(db *gorp.DbMap) []Network {
     return networks
 }
 
-func GetNetwork(db map[string]interface{}, uuid string) Network {
-    var network Network
+func GetNetwork(db map[string]interface{}, uuid string) *Network {
+    var obj interface{}
+    var err error
 
     if _, ok := db["dbmap"]; ok == true {
-        _, err := db["dbmap"].(*gorp.DbMap).Get(&network, uuid)
+        obj, err = db["dbmap"].(*gorp.DbMap).Get(Network{}, uuid)
         if err != nil {
             panic(err)
-            return Network{}
+            return nil
         }
     } else {
-        _, err := db["sqlexecutor"].(gorp.SqlExecutor).Get(&network, uuid)
+        obj, err = db["sqlexecutor"].(gorp.SqlExecutor).Get(Network{}, uuid)
         if err != nil {
             panic(err);
-            return Network{}
+            return nil
         }
     }
 
-    return network
+    return obj.(*Network)
 }
 
 func (network *Network) PostGet(s gorp.SqlExecutor) error {
     var physicals []NetworkPhysical
     var options []DeviceOption
     var addresses []DeviceAddress
-
-    fmt.Printf("Yes, I got here with a UUID of %s\n", network.UUID)
 
     _, err := s.Select(&physicals, "select * from NetworkPhysical where NetworkUUID = ?", network.UUID)
     if err == nil {
@@ -124,44 +122,26 @@ func (network *Network) PostGet(s gorp.SqlExecutor) error {
     return nil
 }
 
-func (network_device *NetworkDevice) PostGet(s gorp.SqlExecutor) error {
-    /* var network *Network */
-    network_device.Network = GetNetwork(map[string]interface{}{"sqlexecutor": s}, network_device.NetworkUUID)
-
-    fmt.Printf("yay!\n");
-
-    /*
-    _, err := s.Get(network, network_device.NetworkUUID)
-    fmt.Printf("Looking for a network with this UUID: %s\n", network_device.NetworkUUID)
-    if err == nil {
-        fmt.Printf("Got it: %+v\n", network)
-        network_device.Network = network
-    }
-    */
-
+func (device *NetworkDevice) PostGet(s gorp.SqlExecutor) error {
+    device.Network = GetNetwork(map[string]interface{}{"sqlexecutor": s}, device.NetworkUUID)
     return nil
 }
 
-func GetNetworkDevices(db map[string]interface{}, vm VirtualMachine.VirtualMachine) []NetworkDevice {
-    var devices []NetworkDevice
+func GetNetworkDevices(db map[string]interface{}, vm VirtualMachine.VirtualMachine) []*NetworkDevice {
+    var devices []*NetworkDevice
 
     if _, ok := db["dbmap"]; ok == true {
         _, err := db["dbmap"].(*gorp.DbMap).Select(&devices, "select * from NetworkDevice where VmUUID = ?", vm.GetUUID())
         if err != nil {
             panic(err)
-            return []NetworkDevice{}
+            return nil
         }
     } else {
         _, err := db["sqlexecutor"].(gorp.SqlExecutor).Select(&devices, "select * from NetworkDevice where VmUUID = ?", vm.GetUUID())
         if err != nil {
             panic(err);
-            return []NetworkDevice{}
+            return nil
         }
-    }
-
-    for i := 0; i < len(devices); i++ {
-        devices[i].Network = GetNetwork(db, devices[i].NetworkUUID)
-        fmt.Printf("Network[%d, %s]: %+v\n", i, devices[i].NetworkUUID, devices[i].Network)
     }
 
     return devices
