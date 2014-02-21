@@ -23,19 +23,23 @@ import (
     "github.com/coopernurse/gorp"
     "github.com/virtbsd/VirtualMachine"
     "github.com/virtbsd/util"
+    "github.com/nu7hatch/gouuid"
 )
 
 type NetworkPhysical struct {
+    NetworkPhysicalID int
     NetworkUUID string
     Device string
 }
 
 type DeviceAddress struct {
+    DeviceAddressID int
     DeviceUUID string
     Address string
 }
 
 type DeviceOption struct {
+    DeviceOptionID int
     DeviceUUID string
     OptionKey string
     OptionValue string
@@ -61,6 +65,7 @@ type NetworkDevice struct {
 }
 
 type Route struct {
+    RouteID int
     VmUUID string
     Source string
     Destination string
@@ -332,4 +337,24 @@ func (device *NetworkDevice) BringOffline() error {
     err := cmd.Run()
 
     return err
+}
+
+func (network *Network) Persist(db *gorp.DbMap) error {
+    return nil
+}
+
+func (device *NetworkDevice) Persist(db *gorp.DbMap, vm VirtualMachine.VirtualMachine) error {
+    device.Network.Persist(db)
+
+    if len(device.UUID) == 0 {
+        uuid, _ := uuid.NewV4()
+        device.UUID = uuid.String()
+
+        db.Insert(device)
+        return nil
+    } else {
+        db.Update(device)
+    }
+
+    return nil
 }
