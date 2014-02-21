@@ -160,7 +160,7 @@ func GetNetworkDevices(db map[string]interface{}, vm VirtualMachine.VirtualMachi
 }
 
 func (network *Network) IsOnline() bool {
-    id := string(network.DeviceID)
+    id := strconv.Itoa(network.DeviceID)
 
     cmd := exec.Command("/sbin/ifconfig", "bridge" + id)
     err := cmd.Run()
@@ -180,6 +180,13 @@ func (network *Network) Start() error {
     }
 
     cmd := exec.Command("/sbin/ifconfig", "bridge" + id, "create")
+    for k, v := range network.Options {
+        cmd.Args = append(cmd.Args, k)
+        if len(v) > 0 {
+            cmd.Args = append(cmd.Args, v)
+        }
+    }
+
     if rawoutput, err := cmd.CombinedOutput(); err != nil {
         return fmt.Errorf("ERROR: ifconfig bridge%s create: %s", id, virtbsdutil.ByteToString(rawoutput))
     }
@@ -281,6 +288,13 @@ func (device *NetworkDevice) BringGuestOnline(vm VirtualMachine.VirtualMachine) 
     }
 
     cmd := exec.Command("/sbin/ifconfig", deviceid, "vnet", vmid)
+    for k, v := range device.Options {
+        cmd.Args = append(cmd.Args, k)
+        if len(v) > 0 {
+            cmd.Args = append(cmd.Args, v)
+        }
+    }
+
     err := cmd.Run()
 
     if err != nil {
