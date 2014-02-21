@@ -20,6 +20,7 @@ import (
     "errors"
     "strings"
     "os/exec"
+    "encoding/json"
     "github.com/coopernurse/gorp"
     "github.com/virtbsd/VirtualMachine"
     "github.com/virtbsd/util"
@@ -69,6 +70,23 @@ type Route struct {
     VmUUID string
     Source string
     Destination string
+}
+
+type NetworkJSON struct {
+    UUID string
+    Name string
+    Status string
+    Options map[string]string
+    Addresses []string
+    Physicals []string
+}
+
+type NetworkDeviceJSON struct {
+    UUID string
+    Status string
+    Options map[string]string
+    Addresses []string
+    Network *Network
 }
 
 func GetNetworks(db *gorp.DbMap) []Network {
@@ -357,4 +375,38 @@ func (device *NetworkDevice) Persist(db *gorp.DbMap, vm VirtualMachine.VirtualMa
     }
 
     return nil
+}
+
+func (network *Network) MarshalJSON() ([]byte, error) {
+    obj := NetworkJSON{}
+    obj.UUID = network.UUID
+    obj.Name = network.Name
+    obj.Options = network.Options
+    obj.Addresses = network.Addresses
+    obj.Physicals = network.Physicals
+
+    if network.IsOnline() {
+        obj.Status = "Online"
+    } else {
+        obj.Status = "Offline"
+    }
+
+    return json.MarshalIndent(obj, "", "    ")
+}
+
+func (device *NetworkDevice) MarshalJSON() ([]byte, error) {
+    obj := NetworkDeviceJSON{}
+    obj.UUID = device.UUID
+    obj.Options = device.Options
+    obj.Addresses = device.Addresses
+    obj.Network = device.Network
+
+    if device.IsOnline() {
+        obj.Status = "Online"
+    } else {
+        obj.Status = "Offline"
+    }
+
+    bytes, err := json.MarshalIndent(obj, "", "    ")
+    return bytes, err
 }
