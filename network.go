@@ -15,8 +15,14 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 package network
 
 import (
+    "fmt"
+    "strconv"
+    "errors"
+    "strings"
+    "os/exec"
     "github.com/coopernurse/gorp"
     "github.com/virtbsd/VirtualMachine"
+    "github.com/virtbsd/util"
 )
 
 type NetworkPhysical struct {
@@ -52,6 +58,12 @@ type NetworkDevice struct {
     Network *Network `db:"-"`
     NetworkUUID string
     VmUUID string
+}
+
+type Route struct {
+    VmUUID string
+    Source string
+    Destination string
 }
 
 func GetNetworks(db *gorp.DbMap) []Network {
@@ -145,4 +157,165 @@ func GetNetworkDevices(db map[string]interface{}, vm VirtualMachine.VirtualMachi
     }
 
     return devices
+}
+
+func (network *Network) IsOnline() bool {
+    id := string(network.DeviceID)
+
+    cmd := exec.Command("/sbin/ifconfig", "bridge" + id)
+    err := cmd.Run()
+
+    if err != nil {
+        return false
+    }
+
+    return true
+}
+
+func (network *Network) Start() error {
+    id := strconv.Itoa(network.DeviceID)
+
+    if network.IsOnline() {
+        return nil
+    }
+
+    cmd := exec.Command("/sbin/ifconfig", "bridge" + id, "create")
+    if rawoutput, err := cmd.CombinedOutput(); err != nil {
+        return fmt.Errorf("ERROR: ifconfig bridge%s create: %s", id, virtbsdutil.ByteToString(rawoutput))
+    }
+
+    cmd = exec.Command("/sbin/ifconfig", "bridge" + id, "up")
+    if rawoutput, err := cmd.CombinedOutput(); err != nil {
+        return fmt.Errorf("ERROR: ifconfig bridge%s up: %s", id, virtbsdutil.ByteToString(rawoutput))
+    }
+
+    for i := range network.Physicals {
+        cmd = exec.Command("/sbin/ifconfig", "bridge" + id, "addm", network.Physicals[i])
+        if rawoutput, err := cmd.CombinedOutput(); err != nil {
+            return fmt.Errorf("ERROR: ifconfig bridge%s addm %s: %s", id, network.Physicals[i], virtbsdutil.ByteToString(rawoutput))
+        }
+    }
+
+    for i := range network.Addresses {
+        proto := "inet"
+        if strings.Index(network.Addresses[i], ":") >= 0 {
+            proto = "inet6"
+        }
+
+        cmd = exec.Command("/sbin/ifconfig", "bridge" + id, proto, network.Addresses[i], "alias")
+        if rawoutput, err := cmd.CombinedOutput(); err != nil {
+            return fmt.Errorf("ERROR: ifconfig bridge%s %s %s alias: %s", id, proto, network.Addresses[i], virtbsdutil.ByteToString(rawoutput))
+        }
+    }
+
+    return nil
+}
+
+func (network *Network) Stop() error {
+    id := strconv.Itoa(network.DeviceID)
+
+    if network.IsOnline() == false {
+        return nil
+    }
+
+    cmd := exec.Command("/sbin/ifconfig", "bridge" + id, "destroy")
+    err := cmd.Run()
+
+    return err
+}
+
+func (device *NetworkDevice) IsOnline() bool {
+    id := strconv.Itoa(device.DeviceID)
+
+    cmd := exec.Command("/sbin/ifconfig", "epair" + id + "a")
+    err := cmd.Run()
+
+    if err != nil {
+        return false
+    }
+
+    return true
+}
+
+func (device *NetworkDevice) BringHostOnline() error {
+    id := strconv.Itoa(device.DeviceID)
+
+    if device.Network.IsOnline() == false {
+        if err := device.Network.Start(); err != nil {
+            return err
+        }
+    }
+
+    if device.IsOnline() == true {
+        if err := device.BringOffline(); err != nil {
+            return err
+        }
+    }
+
+    cmd := exec.Command("/sbin/ifconfig", "epair" + id, "create")
+    if rawoutput, err := cmd.CombinedOutput(); err != nil {
+        return fmt.Errorf("ERROR: ifconfig epair%sa create: %s", id, virtbsdutil.ByteToString(rawoutput))
+    }
+
+    cmd = exec.Command("/sbin/ifconfig", "bridge" + strconv.Itoa(device.Network.DeviceID), "addm", "epair" + id + "a")
+    if rawoutput, err := cmd.CombinedOutput(); err != nil {
+        return fmt.Errorf("ERROR: ifconfig bridge%s addm epair%sa: %s", strconv.Itoa(device.Network.DeviceID), id, virtbsdutil.ByteToString(rawoutput))
+    }
+
+    return nil
+}
+
+func (device *NetworkDevice) BringGuestOnline(vm VirtualMachine.VirtualMachine) error {
+    id := strconv.Itoa(device.DeviceID)
+    vmid := vm.GetUUID()
+    deviceid := "epair" + id + "b"
+
+    if vm.IsOnline() == false {
+        return errors.New("VM is turned off. VM must be turned on to have its networking stack brought online")
+    }
+
+    if device.IsOnline() == false {
+        if err := device.BringHostOnline(); err != nil {
+            return err
+        }
+    }
+
+    cmd := exec.Command("/sbin/ifconfig", deviceid, "vnet", vmid)
+    err := cmd.Run()
+
+    if err != nil {
+        return err
+    }
+
+    for i := range device.Addresses {
+        proto := "inet"
+        if strings.Index(device.Addresses[i], ":") >= 0 {
+            proto = "inet6"
+        }
+
+        cmd = exec.Command("/usr/sbin/jexec", vmid, "/sbin/ifconfig", deviceid, proto, device.Addresses[i], "alias")
+        err = cmd.Run()
+
+        if err != nil {
+            device.BringOffline()
+            return err
+        }
+    }
+
+    cmd = exec.Command("/usr/sbin/jexec", vmid, "/sbin/ifconfig", deviceid, "up")
+
+    return nil
+}
+
+func (device *NetworkDevice) BringOffline() error {
+    id := strconv.Itoa(device.DeviceID)
+
+    if device.IsOnline() == false {
+        return nil
+    }
+
+    cmd := exec.Command("/sbin/ifconfig", "epair" + id + "a", "destroy")
+    err := cmd.Run()
+
+    return err
 }
