@@ -50,16 +50,16 @@ type Network struct {
     UUID string
     Name string
     DeviceID int
-    Options map[string]string `db:"-"`
-    Addresses []string `db:"-"`
-    Physicals []string `db:"-"`
+    Options []*DeviceOption `db:"-"`
+    Addresses []*DeviceAddress `db:"-"`
+    Physicals []*NetworkPhysical `db:"-"`
 }
 
 type NetworkDevice struct {
     UUID string
     DeviceID int
-    Options map[string]string `db:"-"`
-    Addresses []string `db:"-"`
+    Options []*DeviceOption `db:"-"`
+    Addresses []*DeviceAddress `db:"-"`
     Network *Network `db:"-"`
     NetworkUUID string
     VmUUID string
@@ -74,18 +74,20 @@ type Route struct {
 
 type NetworkJSON struct {
     UUID string
+    DeviceID int
     Name string
     Status string
-    Options map[string]string
-    Addresses []string
-    Physicals []string
+    Options []*DeviceOption
+    Addresses []*DeviceAddress
+    Physicals []*NetworkPhysical
 }
 
 type NetworkDeviceJSON struct {
     UUID string
+    DeviceID int
     Status string
-    Options map[string]string
-    Addresses []string
+    Options []*DeviceOption
+    Addresses []*DeviceAddress
     Network *Network
 }
 
@@ -123,34 +125,18 @@ func GetNetwork(db map[string]interface{}, uuid string) *Network {
 }
 
 func (network *Network) PostGet(s gorp.SqlExecutor) error {
-    var physicals []NetworkPhysical
-    var options []DeviceOption
-    var addresses []DeviceAddress
-
-    _, err := s.Select(&physicals, "select * from NetworkPhysical where NetworkUUID = ?", network.UUID)
-    if err == nil {
-        for i := 0; i < len(physicals); i++ {
-            network.Physicals = append(network.Physicals, physicals[i].Device)
-        }
-    } else {
+    _, err := s.Select(&network.Physicals, "select * from NetworkPhysical where NetworkUUID = ?", network.UUID)
+    if err != nil {
         panic(err)
     }
 
-    _, err = s.Select(&options, "select * from DeviceOption where DeviceUUID = ?", network.UUID)
-    if err == nil {
-        for i := 0; i < len(options); i++ {
-            network.Options[options[i].OptionKey] = options[i].OptionValue
-        }
-    } else {
+    _, err = s.Select(&network.Options, "select * from DeviceOption where DeviceUUID = ?", network.UUID)
+    if err != nil {
         panic(err)
     }
 
-    _, err = s.Select(&addresses, "select * from DeviceAddress where DeviceUUID = ?", network.UUID)
-    if err == nil {
-        for i := 0; i < len(addresses); i++ {
-            network.Addresses = append(network.Addresses, addresses[i].Address)
-        }
-    } else {
+    _, err = s.Select(&network.Addresses, "select * from DeviceAddress where DeviceUUID = ?", network.UUID)
+    if err != nil {
         panic(err)
     }
 
@@ -159,6 +145,15 @@ func (network *Network) PostGet(s gorp.SqlExecutor) error {
 
 func (device *NetworkDevice) PostGet(s gorp.SqlExecutor) error {
     device.Network = GetNetwork(map[string]interface{}{"sqlexecutor": s}, device.NetworkUUID)
+
+    if _, err := s.Select(&device.Options, "select * from DeviceOption where DeviceUUID = ?", device.UUID); err != nil {
+        panic(err)
+    }
+
+    if _, err := s.Select(&device.Addresses, "select * from DeviceAddress where DeviceUUID = ?", device.UUID); err != nil {
+        panic(err)
+    }
+
     return nil
 }
 
@@ -203,10 +198,10 @@ func (network *Network) Start() error {
     }
 
     cmd := exec.Command("/sbin/ifconfig", "bridge" + id, "create")
-    for k, v := range network.Options {
-        cmd.Args = append(cmd.Args, k)
-        if len(v) > 0 {
-            cmd.Args = append(cmd.Args, v)
+    for _, option := range network.Options {
+        cmd.Args = append(cmd.Args, option.OptionKey)
+        if len(option.OptionValue) > 0 {
+            cmd.Args = append(cmd.Args, option.OptionValue)
         }
     }
 
@@ -219,22 +214,22 @@ func (network *Network) Start() error {
         return fmt.Errorf("ERROR: ifconfig bridge%s up: %s", id, virtbsdutil.ByteToString(rawoutput))
     }
 
-    for i := range network.Physicals {
-        cmd = exec.Command("/sbin/ifconfig", "bridge" + id, "addm", network.Physicals[i])
+    for _, physical := range network.Physicals {
+        cmd = exec.Command("/sbin/ifconfig", "bridge" + id, "addm", physical.Device)
         if rawoutput, err := cmd.CombinedOutput(); err != nil {
-            return fmt.Errorf("ERROR: ifconfig bridge%s addm %s: %s", id, network.Physicals[i], virtbsdutil.ByteToString(rawoutput))
+            return fmt.Errorf("ERROR: ifconfig bridge%s addm %s: %s", id, physical.Device, virtbsdutil.ByteToString(rawoutput))
         }
     }
 
-    for i := range network.Addresses {
+    for _, address := range network.Addresses {
         proto := "inet"
-        if strings.Index(network.Addresses[i], ":") >= 0 {
+        if strings.Index(address.Address, ":") >= 0 {
             proto = "inet6"
         }
 
-        cmd = exec.Command("/sbin/ifconfig", "bridge" + id, proto, network.Addresses[i], "alias")
+        cmd = exec.Command("/sbin/ifconfig", "bridge" + id, proto, address.Address, "alias")
         if rawoutput, err := cmd.CombinedOutput(); err != nil {
-            return fmt.Errorf("ERROR: ifconfig bridge%s %s %s alias: %s", id, proto, network.Addresses[i], virtbsdutil.ByteToString(rawoutput))
+            return fmt.Errorf("ERROR: ifconfig bridge%s %s %s alias: %s", id, proto, address.Address, virtbsdutil.ByteToString(rawoutput))
         }
     }
 
@@ -292,6 +287,11 @@ func (device *NetworkDevice) BringHostOnline() error {
         return fmt.Errorf("ERROR: ifconfig bridge%s addm epair%sa: %s", strconv.Itoa(device.Network.DeviceID), id, virtbsdutil.ByteToString(rawoutput))
     }
 
+    cmd = exec.Command("/sbin/ifconfig", "epair" + id + "a", "up")
+    if rawoutput, err := cmd.CombinedOutput(); err != nil {
+        return fmt.Errorf("ERROR: ifconfig epair%sa create: %s", id, virtbsdutil.ByteToString(rawoutput))
+    }
+
     return nil
 }
 
@@ -299,6 +299,7 @@ func (device *NetworkDevice) BringGuestOnline(vm VirtualMachine.VirtualMachine) 
     id := strconv.Itoa(device.DeviceID)
     vmid := vm.GetUUID()
     deviceid := "epair" + id + "b"
+    needs_dhcp := false
 
     if vm.IsOnline() == false {
         return errors.New("VM is turned off. VM must be turned on to have its networking stack brought online")
@@ -311,10 +312,15 @@ func (device *NetworkDevice) BringGuestOnline(vm VirtualMachine.VirtualMachine) 
     }
 
     cmd := exec.Command("/sbin/ifconfig", deviceid, "vnet", vmid)
-    for k, v := range device.Options {
-        cmd.Args = append(cmd.Args, k)
-        if len(v) > 0 {
-            cmd.Args = append(cmd.Args, v)
+    for _, option := range device.Options {
+        if option.OptionKey == "DHCP" {
+            needs_dhcp = true
+            continue
+        }
+
+        cmd.Args = append(cmd.Args, option.OptionKey)
+        if len(option.OptionValue) > 0 {
+            cmd.Args = append(cmd.Args, option.OptionValue)
         }
     }
 
@@ -324,13 +330,20 @@ func (device *NetworkDevice) BringGuestOnline(vm VirtualMachine.VirtualMachine) 
         return err
     }
 
-    for i := range device.Addresses {
+    if needs_dhcp {
+        cmd = exec.Command("/usr/sbin/jexec", vmid, "/sbin/dhclient", deviceid)
+        if rawoutput, err := cmd.CombinedOutput(); err != nil {
+            return fmt.Errorf("/sbin/dhclient %s: %s", deviceid, virtbsdutil.ByteToString(rawoutput))
+        }
+    }
+
+    for _, address := range device.Addresses {
         proto := "inet"
-        if strings.Index(device.Addresses[i], ":") >= 0 {
+        if strings.Index(address.Address, ":") >= 0 {
             proto = "inet6"
         }
 
-        cmd = exec.Command("/usr/sbin/jexec", vmid, "/sbin/ifconfig", deviceid, proto, device.Addresses[i], "alias")
+        cmd = exec.Command("/usr/sbin/jexec", vmid, "/sbin/ifconfig", deviceid, proto, address.Address, "alias")
         err = cmd.Run()
 
         if err != nil {
@@ -380,6 +393,7 @@ func (device *NetworkDevice) Persist(db *gorp.DbMap, vm VirtualMachine.VirtualMa
 func (network *Network) MarshalJSON() ([]byte, error) {
     obj := NetworkJSON{}
     obj.UUID = network.UUID
+    obj.DeviceID = network.DeviceID
     obj.Name = network.Name
     obj.Options = network.Options
     obj.Addresses = network.Addresses
@@ -397,6 +411,7 @@ func (network *Network) MarshalJSON() ([]byte, error) {
 func (device *NetworkDevice) MarshalJSON() ([]byte, error) {
     obj := NetworkDeviceJSON{}
     obj.UUID = device.UUID
+    obj.DeviceID = device.DeviceID
     obj.Options = device.Options
     obj.Addresses = device.Addresses
     obj.Network = device.Network
