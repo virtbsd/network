@@ -103,9 +103,41 @@ func GetNetworks(db *gorp.DbMap) []Network {
     return networks
 }
 
-func GetNetwork(db map[string]interface{}, uuid string) *Network {
+func LookupUUID(db map[string]interface{}, field map[string]interface{}) string {
+    fields := []string{ "uuid", "name" }
+
+    if uuid, ok := field["uuid"]; ok == true {
+        return uuid.(string)
+    }
+
+    for i := 0; i < len(fields); i++ {
+        if val, ok := field[fields[i]]; ok == true {
+            var myuuid string
+            var err error
+
+            if _, ok = db["dbmap"]; ok == true {
+                myuuid, err = db["dbmap"].(*gorp.DbMap).SelectStr("select UUID from network where " + fields[i] + " = ?", val)
+            } else {
+                myuuid, err = db["sqleecutor"].(gorp.SqlExecutor).SelectStr("select UUID from network where " + fields[i] + " = ?", val)
+            }
+
+            if err == nil {
+                return myuuid
+            }
+        }
+    }
+
+    return ""
+}
+
+func GetNetwork(db map[string]interface{}, field map[string]interface{}) *Network {
     var obj interface{}
     var err error
+
+    uuid := LookupUUID(db, field)
+    if len(uuid) == 0 {
+        return nil
+    }
 
     if _, ok := db["dbmap"]; ok == true {
         obj, err = db["dbmap"].(*gorp.DbMap).Get(Network{}, uuid)
@@ -119,6 +151,10 @@ func GetNetwork(db map[string]interface{}, uuid string) *Network {
             panic(err);
             return nil
         }
+    }
+
+    if obj== nil {
+        return nil
     }
 
     return obj.(*Network)
@@ -144,7 +180,7 @@ func (network *Network) PostGet(s gorp.SqlExecutor) error {
 }
 
 func (device *NetworkDevice) PostGet(s gorp.SqlExecutor) error {
-    device.Network = GetNetwork(map[string]interface{}{"sqlexecutor": s}, device.NetworkUUID)
+    device.Network = GetNetwork(map[string]interface{}{"sqlexecutor": s}, map[string]interface{}{ "uuid": device.NetworkUUID})
 
     if _, err := s.Select(&device.Options, "select * from DeviceOption where DeviceUUID = ?", device.UUID); err != nil {
         panic(err)
@@ -247,6 +283,15 @@ func (network *Network) Stop() error {
     err := cmd.Run()
 
     return err
+}
+
+func (network *Network) Delete(db *gorp.DbMap) error {
+    if len(network.UUID) > 0 {
+        _, err := db.Delete(network)
+        return err
+    }
+
+    return nil
 }
 
 func (device *NetworkDevice) IsOnline() bool {
@@ -371,20 +416,100 @@ func (device *NetworkDevice) BringOffline() error {
 }
 
 func (network *Network) Persist(db *gorp.DbMap) error {
+    if len(network.UUID) == 0 {
+        uuid, _ := uuid.NewV4()
+        network.UUID = uuid.String()
+        db.Insert(network)
+    } else {
+        db.Update(network)
+    }
+
+    for _, address := range network.Addresses {
+        if len(address.DeviceUUID) == 0 {
+            address.DeviceUUID = network.UUID
+        }
+
+        if address.DeviceAddressID == 0 {
+            db.Insert(address)
+        } else {
+            db.Update(address)
+        }
+    }
+
+    for _, option := range network.Options {
+        option.DeviceUUID = network.UUID
+
+        if option.DeviceOptionID == 0 {
+            db.Insert(option)
+        } else {
+            db.Update(option)
+        }
+    }
+
+    for _, physical := range network.Physicals {
+        if len(physical.NetworkUUID) == 0 {
+            physical.NetworkUUID = network.UUID
+        }
+
+        if physical.NetworkPhysicalID == 0 {
+            db.Insert(physical);
+        } else {
+            db.Update(physical);
+        }
+    }
+
     return nil
 }
 
 func (device *NetworkDevice) Persist(db *gorp.DbMap, vm VirtualMachine.VirtualMachine) error {
+    insert := false
     device.Network.Persist(db)
 
+    device.NetworkUUID = device.Network.UUID
+
     if len(device.UUID) == 0 {
+        insert = true
         uuid, _ := uuid.NewV4()
         device.UUID = uuid.String()
+    }
 
+    if insert {
         db.Insert(device)
-        return nil
     } else {
         db.Update(device)
+    }
+
+    for _, address := range device.Addresses {
+        if len(address.DeviceUUID) == 0 {
+            address.DeviceUUID = device.UUID
+        }
+
+        if address.DeviceAddressID == 0 {
+            db.Insert(address)
+        } else {
+            db.Update(address)
+        }
+    }
+
+    for _, option := range device.Options {
+        option.DeviceUUID = device.UUID
+
+        if option.DeviceOptionID == 0 {
+            db.Insert(option)
+        } else {
+            db.Update(option)
+        }
+    }
+
+    return nil
+}
+
+func (device *NetworkDevice) Delete(db *gorp.DbMap) error {
+    device.Network = nil
+
+    if len(device.UUID) > 0 {
+        _, err := db.Delete(device)
+        return err
     }
 
     return nil
