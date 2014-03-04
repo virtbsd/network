@@ -417,9 +417,15 @@ func (device *NetworkDevice) BringOffline() error {
 
 func (network *Network) Persist(db *gorp.DbMap) error {
     if len(network.UUID) == 0 {
-        uuid, _ := uuid.NewV4()
-        network.UUID = uuid.String()
-        db.Insert(network)
+        obj := GetNetwork(map[string]interface{}{"dbmap": db}, map[string]interface{}{"name": network.Name})
+        if obj == nil {
+            uuid, _ := uuid.NewV4()
+            network.UUID = uuid.String()
+            db.Insert(network)
+        } else {
+            network.UUID = obj.UUID
+            db.Update(network)
+        }
     } else {
         db.Update(network)
     }
@@ -549,4 +555,34 @@ func (device *NetworkDevice) MarshalJSON() ([]byte, error) {
 
     bytes, err := json.MarshalIndent(obj, "", "    ")
     return bytes, err
+}
+
+func FindDevice(devices []*NetworkDevice, device *NetworkDevice) *NetworkDevice {
+    for _, d := range devices {
+        if d.UUID == device.UUID && d.DeviceID == device.DeviceID {
+            return d
+        }
+    }
+
+    return nil
+}
+
+func FindAddress(addresses []*DeviceAddress, address *DeviceAddress) *DeviceAddress {
+    for _, a := range addresses {
+        if a.Address == address.Address {
+            return a
+        }
+    }
+
+    return nil
+}
+
+func FindOption(options []*DeviceOption, option *DeviceOption) *DeviceOption {
+    for _, o := range options {
+        if o.OptionKey == option.OptionKey {
+            return o
+        }
+    }
+
+    return nil
 }
